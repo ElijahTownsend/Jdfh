@@ -1,0 +1,120 @@
+name: RDP via AnyDesk
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure RDP Settings
+        run: |
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                           -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Configure RDP for better compatibility
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "UserAuthentication" -Value 0 -Force
+          
+          # Add firewall rule for RDP
+          netsh advfirewall firewall add rule name="RDP" `
+            dir=in action=allow protocol=TCP localport=3389
+          
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User
+        run: |
+          # Generate secure password
+          Add-Type -AssemblyName System.Web
+          $password = [System.Web.Security.Membership]::GeneratePassword(16, 4)
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          # Create user
+          New-LocalUser -Name "GitHubRDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "GitHubRDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "GitHubRDP"
+          
+          # Store credentials
+          echo "RDP_USER=GitHubRDP" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+
+      - name: Install AnyDesk
+        run: |
+          $anydeskUrl = "https://download.anydesk.com/AnyDesk.exe"
+          $installerPath = "$env:TEMP\AnyDesk.exe"
+          
+          # Download AnyDesk
+          Invoke-WebRequest -Uri $anydeskUrl -OutFile $installerPath
+          
+          # Install AnyDesk silently
+          Start-Process -FilePath $installerPath -ArgumentList "--install `"$env:ProgramFiles\AnyDesk`" --start-with-win --silent" -Wait
+          
+          # Set a random password for AnyDesk (optional)
+          $anydeskPassword = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 12 | % {[char]$_})
+          & "$env:ProgramFiles\AnyDesk\AnyDesk.exe" --set-password=$anydeskPassword
+          
+          # Get AnyDesk ID
+          Start-Sleep -Seconds 5
+          $anydeskInfo = & "$env:ProgramFiles\AnyDesk\AnyDesk.exe" --get-id
+          
+          echo "ANYDESK_ID=$anydeskInfo" >> $env:GITHUB_ENV
+          echo "ANYDESK_PASS=$anydeskPassword" >> $env:GITHUB_ENV
+          
+          # Configure AnyDesk for unattended access
+          & "$env:ProgramFiles\AnyDesk\AnyDesk.exe" --create-alias "github-runner-$env:GITHUB_RUN_ID"
+          
+          # Allow RDP through AnyDesk
+          & "$env:ProgramFiles\AnyDesk\AnyDesk.exe" --enable-plugin RDP
+
+      - name: Configure Network and Security
+        run: |
+          # Display AnyDesk connection info
+          Write-Host "`n=== ANYDESK CONNECTION ==="
+          Write-Host "AnyDesk ID: $env:ANYDESK_ID"
+          Write-Host "AnyDesk Password: $env:ANYDESK_PASS"
+          Write-Host "AnyDesk Alias: github-runner-$env:GITHUB_RUN_ID"
+          Write-Host "==========================`n"
+          
+          # Display RDP credentials
+          Write-Host "`n=== RDP CONNECTION ==="
+          Write-Host "Username: $env:RDP_USER"
+          Write-Host "Password: $env:RDP_PASS"
+          Write-Host "=====================`n"
+          
+          # Get public IP for reference
+          $publicIP = (Invoke-WebRequest -Uri "https://api.ipify.org" -UseBasicParsing).Content
+          Write-Host "Public IP: $publicIP"
+          
+          # Keep AnyDesk and RDP services running
+          Set-Service -Name AnyDesk -StartupType Automatic
+          Start-Service -Name AnyDesk
+
+      - name: Keep Runner Active
+        run: |
+          Write-Host "`n=== CONNECTION INFORMATION ==="
+          Write-Host "1. AnyDesk Connection:"
+          Write-Host "   - ID: $env:ANYDESK_ID"
+          Write-Host "   - Password: $env:ANYDESK_PASS"
+          Write-Host "   - Alias: github-runner-$env:GITHUB_RUN_ID"
+          Write-Host ""
+          Write-Host "2. RDP Connection:"
+          Write-Host "   - User: $env:RDP_USER"
+          Write-Host "   - Password: $env:RDP_PASS"
+          Write-Host "===============================`n"
+          
+          # Display QR code for AnyDesk (optional)
+          & "$env:ProgramFiles\AnyDesk\AnyDesk.exe" --get-qr 2
+          
+          # Keep the runner alive
+          $counter = 0
+          while ($counter -lt 720) {  # 6 hours max (720 * 30 seconds)
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Runner active - Session will auto-terminate after timeout"
+              Write-Host "AnyDesk ID: $env:ANYDESK_ID"
+              Start-Sleep -Seconds 30
+              $counter++
+          }
+          
+          Write-Host "Session timeout reached. Shutting down..."
