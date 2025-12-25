@@ -27,9 +27,11 @@ jobs:
 
       - name: Create RDP User
         run: |
-          # Generate secure password
-          Add-Type -AssemblyName System.Web
-          $password = [System.Web.Security.Membership]::GeneratePassword(16, 4)
+          # Generate a secure random password
+          $length = 16
+          $specialChars = '!@#$%^&*()_+-=[]{}|;:,.<>?'
+          $allChars = ([char[]](48..57 + 65..90 + 97..122)) + ($specialChars.ToCharArray())
+          $password = -join (1..$length | ForEach-Object { $allChars | Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
           # Create user
@@ -37,7 +39,7 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "GitHubRDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "GitHubRDP"
           
-          # Store credentials
+          # Store credentials in GitHub environment
           echo "RDP_USER=GitHubRDP" >> $env:GITHUB_ENV
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
@@ -52,7 +54,7 @@ jobs:
           # Install AnyDesk silently
           Start-Process -FilePath $installerPath -ArgumentList "--install `"$env:ProgramFiles\AnyDesk`" --start-with-win --silent" -Wait
           
-          # Set a random password for AnyDesk (optional)
+          # Set a random password for AnyDesk
           $anydeskPassword = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 12 | % {[char]$_})
           & "$env:ProgramFiles\AnyDesk\AnyDesk.exe" --set-password=$anydeskPassword
           
